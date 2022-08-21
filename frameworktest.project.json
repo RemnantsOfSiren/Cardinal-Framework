@@ -1,0 +1,16 @@
+{
+    "name": "Framework Testing",
+    "servePort": 34872,
+    "tree": {
+        "$className": "DataModel",
+        
+        "ReplicatedStorage": {
+            "$className": "ReplicatedStorage",
+            "$ignoreUnknownInstances": true,
+            "CardinalSystem": {
+              "$path": "src",
+              "$ignoreUnknownInstances": true
+            }
+        }
+    }
+}
