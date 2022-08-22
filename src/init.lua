@@ -62,7 +62,7 @@ function CardinalSystem.new()
     return self;
 end
 
-local function GetRunnableAsync(Name: string, Timeout: number?)
+local function GetRunnableAsync(_: typeof(CardinalSystem), Name: string, Timeout: number?)
     if not Timeout then
         Timeout = 10;
     end
@@ -87,7 +87,7 @@ local function GetRunnableAsync(Name: string, Timeout: number?)
     end
 end
 
-local function GetRunnable(Name: string, Timeout: number?)
+local function GetRunnable(_: typeof(CardinalSystem), Name: string, Timeout: number?)
     local Success, Runnable = GetRunnableAsync(Name, Timeout):await();
     if not Success then
         error(Runnable);
