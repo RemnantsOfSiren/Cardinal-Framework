@@ -8,10 +8,6 @@ local IsServer = RunService:IsServer();
 local Adapter = {};
 Adapter.__index = Adapter;
 
-function Adapter:_CheckMiddleware(Category: string, Args: {[any]: any})
-
-end
-
 if IsServer then
     export type PlayerStatistic = {
         Caller: Player;
@@ -22,26 +18,30 @@ if IsServer then
     -- [[ This will pertain to middleware exclusively ]] --
     function Adapter:_CreatePlayerStatistics(Player: Player)
         local Statistics = {
-            Caller = Player;
-
             [1] = {
+                Caller = Player;
+
                 Requests = {
                     Success = 0;
                     Total = 0;
                 };
+
                 Last = {
-                    Time = tick() - 10;
+                    Time = tick() - 1000;
                     Status = false;
                 }
             };
 
             [2] = {
+                Caller = Player;
+
                 Requests = {
                     Success = 0;
                     Total = 0;
                 };
+                
                 Last = {
-                    Time = tick() - 10;
+                    Time = tick() - 1000;
                     Status = false;
                 }
             }
@@ -54,34 +54,63 @@ if IsServer then
 
     function Adapter:Fire(Filter: (Player) -> boolean, Event: string, ...)
         local Args = {...};
-        for _, Player in pairs(PlayerService:GetPlayers()) do
-            if Filter(Player) then
-                self._REvent:FireClient(Player, Event, Args);
+
+        local Success, Args = self:_CheckMiddleware('Outbound', Args);
+
+        if Success then
+            for _, Player in pairs(PlayerService:GetPlayers()) do
+                if Filter(Player) then
+                    self._REvent:FireClient(Player, Event, Args);
+                end
             end
+        end
+    end
+
+    function Adapter:FireAll(Event: string, ...)
+        return self:Fire(function(Player)
+            return Player:IsA("Player");
+        end, Event, ...);
+    end
+end
+
+function Adapter:_CheckMiddleware(Category: string, Args: {[any]: any})
+    local Pass;
+
+    for _, Middleware in pairs(self._Middleware[Category]) do
+        Pass, Args = Middleware(Args);
+        if not Pass then
+            break
+        end
+    end
+
+    return Pass, Args;
+end
+
+function Adapter:AddMiddleware(Category: string, Callbacks: {any})
+    local Middlewares = self._Middleware[Category];
+    if Middlewares then
+        for _, Callback in pairs(Callbacks) do
+            table.insert(Middlewares, Callback);
         end
     end
 end
 
 function Adapter.new(Parent, Provider)
     local self = setmetatable({}, Adapter);
+
     self._Events = {};
     self._Functions = {};
+
     self._Middleware = {
         ["Inbound"] = {
             [1] = function(Args)
-                if IsServer then
-                    table.remove(Args, 1);
-                end
                 Args = Serialization:DeserializeData(Args);
                 return true, Args;
             end
         };
+
         ["Outbound"] = {
             [1] = function(Args)
-                if IsServer then
-                    table.remove(Args, 1);
-                end
-
                 Args = Serialization:SerializeData(Args);
                 return true, Args;
             end
@@ -115,6 +144,8 @@ function Adapter.new(Parent, Provider)
                 Statistics = self:_CreatePlayerStatistics(Player);
             end
 
+            local CurrentStatistics = Statistics[1];
+
             if Todo == "GetEvents" then
                 local List = {};
                 for Index in pairs(Provider.Client) do
@@ -125,17 +156,17 @@ function Adapter.new(Parent, Provider)
                 Res.Success = true;
                 Res.Response = List;
             elseif Provider.Client[Todo] then
-                table.insert(Args, 1, Statistics);
+                table.insert(Args, 1, CurrentStatistics);
                 local Passed;
                 Passed, Args = self:_CheckMiddleware("Inbound", Args);
 
                 if Passed then
+                    table.remove(Args, 1);
                     Res.Success = true;
-                    Res.Response = Provider.Client[Todo](Provider.Client, IsServer and Player or nil, unpack(Args));
+                    Res.Response = Provider.Client[Todo](Provider.Client, Player, unpack(Args));
                 end
             end
 
-            local CurrentStatistics = Statistics[1];
             CurrentStatistics.Requests.Total += 1;
             CurrentStatistics.Requests.Success += if Res.Success then 1 else 0;
             CurrentStatistics.Last.Time = if Res.Success then tick() else CurrentStatistics.Last.Time;

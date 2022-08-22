@@ -2,7 +2,6 @@
 local RunService = game:GetService('RunService');
 local PlayerService = game:GetService('Players');
 local HttpService = game:GetService('HttpService');
-local ComponentHandlers = {};
 
 local Runnables = {};
 local Resources = {};
@@ -27,28 +26,24 @@ end
 
 local Promise = Resources["Promise"];
 local Janitor = Resources["Janitor"];
-local Signal = Resources["Signal"];
 local Adapter = Resources["Adapter"];
 
 local IsServer = RunService:IsServer();
 local Handler;
 
-local Cardinal = {};
-Cardinal.__index = Cardinal;
+local CardinalSystem = {};
+CardinalSystem.__index = CardinalSystem;
 
-function Cardinal.new()
+function CardinalSystem.new()
     local self = setmetatable({
         _Janitor = Janitor.new();
-        Initialized = Signal.new();
-        Started = Signal.new();
-    }, Cardinal);
+    }, CardinalSystem);
 
     self.new = nil;
     self._Events = {
         [RunService] = {};
         [PlayerService] = {};
     };
-
 
     local Folder;
     if IsServer then
@@ -63,17 +58,13 @@ function Cardinal.new()
         self._ServiceFolder = script:WaitForChild("ServiceFolder");
     end
 
-    local _Janitor = self._Janitor;
-    _Janitor:Add(self.Initialized, "Destroy");
-    _Janitor:Add(self.Started, "Destroy");
-
     Handler = self;
     return self;
 end
 
 if IsServer then
     -- [[ Server Exclusive ]] --
-    function Cardinal:CreateService(ServiceInfo: {[any]: any})
+    function CardinalSystem:CreateService(ServiceInfo: {[any]: any})
         assert(ServiceInfo.Name, "Service Requires Name");
         local NewService = ServiceInfo;
 
@@ -93,7 +84,7 @@ if IsServer then
 else
     local Adapters = {};
 
-    function Cardinal:GetServiceAsync(Name: string)
+    function CardinalSystem:GetServiceAsync(Name: string)
         if not self._Networking then
             return Promise.reject("Networking isn't enabled.");
         end
@@ -112,12 +103,12 @@ else
         end
     end
 
-    function Cardinal:GetService(Name: string)
+    function CardinalSystem:GetService(Name: string)
         local _, NetworkAdapter = self:GetServiceAsync(Name):catch(warn):await();
         return NetworkAdapter;
     end
     -- [[ Client Exclusive ]] --
-    function Cardinal:CreateController(ControllerInfo: {[any]: any})
+    function CardinalSystem:CreateController(ControllerInfo: {[any]: any})
         assert(ControllerInfo.Name, "Controller Requires Name");
         local NewController = ControllerInfo;
         Runnables[NewController.Name] = NewController;
@@ -130,12 +121,12 @@ local function Get(Data: Folder | {ModuleScript} | ModuleScript, Descendants: bo
     local T = if typeof(Data) == "table" then Data else Data:GetChildren();
 
      if T and Descendants then
-        for Index, Object in pairs(T) do
+        for _, Object in pairs(T) do
             if not Object:IsA("ModuleScript") then
                 table.remove(T, table.find(T, Object));
                 continue
             end
-            
+
             for _, Descendant in pairs(Object:GetDescendants()) do
                 if Descendant:IsA("ModuleScript") then
                     table.insert(T, Descendant);
@@ -159,7 +150,7 @@ local function ProcessObject(Object, Table: {any}?)
     end
 end
 
-function Cardinal:AddResources(_Resources: Folder | {ModuleScript} | ModuleScript | nil, Descendants: boolean?)
+function CardinalSystem:AddResources(_Resources: Folder | {ModuleScript} | ModuleScript | nil, Descendants: boolean?)
     if _Resources ~= nil and typeof(_Resources) ~= "boolean" then
         for _, Module in pairs(Get(_Resources, Descendants)) do
             task.spawn(ProcessObject, Module, Resources);
@@ -167,7 +158,7 @@ function Cardinal:AddResources(_Resources: Folder | {ModuleScript} | ModuleScrip
     end
 end
 
-function Cardinal:AddRunnables(_Runnables: Folder | {ModuleScript} | ModuleScript | nil, Descendants: boolean?)
+function CardinalSystem:AddRunnables(_Runnables: Folder | {ModuleScript} | ModuleScript | nil, Descendants: boolean?)
     if _Runnables ~= nil and typeof(_Runnables) ~= "boolean" then
         for _, Module in pairs(Get(_Runnables, Descendants)) do
             task.spawn(ProcessObject, Module);
@@ -175,7 +166,7 @@ function Cardinal:AddRunnables(_Runnables: Folder | {ModuleScript} | ModuleScrip
     end
 end
 
-function Cardinal:AddEvent(Service: ServiceProvider, Event: string, Callback: (...any) -> nil): string?
+function CardinalSystem:AddEvent(Service: ServiceProvider, Event: string, Callback: (...any) -> nil): string?
     local ProviderCache = self._Events[Service];
     if not ProviderCache then return nil end
 
@@ -195,12 +186,11 @@ function Cardinal:AddEvent(Service: ServiceProvider, Event: string, Callback: (.
                 for _, _Callback in pairs(Table) do
                     task.spawn(_Callback, ...);
                 end
-            end), "Disconnect")
+            end), "Disconnect");
         end
 
         self._Events[Service][Event] = Table;
     end
-
 
     local Unique = HttpService:GenerateGUID(false);
 
@@ -209,34 +199,15 @@ function Cardinal:AddEvent(Service: ServiceProvider, Event: string, Callback: (.
     return Unique;
 end
 
-function Cardinal:LoadLibrary(Name: string, TimeOut: number?)
+function CardinalSystem:LoadLibrary(Name: string)
     if Resources[Name] then
         return Resources[Name];
     else
-        TimeOut = if TimeOut then TimeOut else 10;
-        local Found = nil;
-
-        task.delay(TimeOut, function()
-            Found = false;
-        end)
-        
-        local Success, Result = Promise.new(function(Resolve, Reject)
-            repeat
-                Found = Resources[Name];
-                task.wait(.1);
-            until Found ~= nil;
-            if not Found then
-                return Reject("Package not found");
-            end
-            return Resolve(Found);
-        end):await();
-
-        assert(Success, string.format("%s couldn't be found.", Name));
-        return Result;
+        warn(string.format("Resource(%s) Not Found.", Name));
     end
 end
 
-function Cardinal:_Init()
+function CardinalSystem:_Init()
     local Promises = {};
 
     for Name, Runnable in pairs(Runnables) do
@@ -264,7 +235,7 @@ function Cardinal:_Init()
     return Promise.allSettled(Promises);
 end
 
-function Cardinal:Start(Config: {[string]: any}?)
+function CardinalSystem:Start(Config: {[string]: any}?)
     if IsServer then
         if Config then
             self._Networking = Config.Networking ~= nil and Config.Networking or true;
@@ -349,17 +320,17 @@ function Cardinal:Start(Config: {[string]: any}?)
 
 		local function CharacterAdded(Character)
 			if self._Events[PlayerService]["CharacterAdded"] then
-	            if not Character:IsDescendantOf(workspace) or Character.PrimaryPart then
+	            if not Character:IsDescendantOf(workspace) or not Character.PrimaryPart then
 	                repeat
-	                    task.wait(.01);
+	                    task.wait();
 	                until Character:IsDescendantOf(workspace) and Character.PrimaryPart ~= nil;
 	            end
 
 	            for _, Callback in pairs(self._Events[PlayerService]["CharacterAdded"]) do
 	                task.spawn(Callback, Character, Player);
 	            end
-			end	
-		end
+			end
+        end
 
         if PlayerService.CharacterAutoLoads then
             local Character = Player.Character or Player.CharacterAdded:Wait();
@@ -382,12 +353,11 @@ function Cardinal:Start(Config: {[string]: any}?)
         Finished.Parent = script;
     end
 
-    self.Started:Fire();
     return Promise.resolve("Finished");
 end
 
 if not Handler then
-    return Cardinal.new();
+    return CardinalSystem.new();
 else
     return Handler;
 end
