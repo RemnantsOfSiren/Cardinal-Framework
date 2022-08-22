@@ -62,6 +62,40 @@ function CardinalSystem.new()
     return self;
 end
 
+local function GetRunnableAsync(Name: string, Timeout: number?)
+    if not Timeout then
+        Timeout = 10;
+    end
+
+    local Runnable = Runnables[Name];
+
+    if Runnable then
+        return Promise.resolve(Runnable);
+    else
+        return Promise.new(function(Resolve, Reject)
+            local T = tick();
+            repeat
+                Runnable = Runnables[Name];
+                task.wait();
+            until tick() - T > Timeout or Runnable ~= nil;
+            if Runnable ~= nil then
+                return Resolve(Runnables[Name]);
+            else
+                return Reject(string.format("Couldn't find %s(%s): %s", if IsServer then "Service" else "Controller", Name, debug.traceback()));
+            end
+        end)
+    end
+end
+
+local function GetRunnable(Name: string, Timeout: number?)
+    local Success, Runnable = GetRunnableAsync(Name, Timeout):await();
+    if not Success then
+        error(Runnable);
+        return
+    end
+    return Runnable;
+end
+
 if IsServer then
     -- [[ Server Exclusive ]] --
     function CardinalSystem:CreateService(ServiceInfo: {[any]: any})
@@ -81,30 +115,37 @@ if IsServer then
         Runnables[NewService.Name] = NewService;
         return NewService;
     end
+
+    CardinalSystem.GetServiceAsync = GetRunnableAsync;
+    CardinalSystem.GetService = GetRunnable;
 else
     local Adapters = {};
 
     function CardinalSystem:GetServiceAsync(Name: string)
         if not self._Networking then
-            return Promise.reject("Networking isn't enabled.");
+            return Promise.reject(string.format("Networking is disabled: %s", debug.traceback()));
         end
 
         if Adapters[Name] then
             return Promise.resolve(Adapters[Name]);
         else
             return Promise.new(function(Resolve, Reject)
-                local Adapter = Adapter.new(self._ServiceFolder, Name);
-                if not Adapter then
-                    return Reject("Adapter couldn't be made.");
+                local _Adapter = Adapter.new(self._ServiceFolder, Name);
+                if not _Adapter then
+                    return Reject(string.format("Error trying to make ClientAdapter for %s: %s", Name, debug.traceback()));
                 end
-                Adapters[Name] = Adapter;
-                return Resolve(Adapter);
+                Adapters[Name] = _Adapter;
+                return Resolve(_Adapter);
             end)
         end
     end
 
     function CardinalSystem:GetService(Name: string)
-        local _, NetworkAdapter = self:GetServiceAsync(Name):catch(warn):await();
+        local Success, NetworkAdapter = self:GetServiceAsync(Name):await();
+        if not Success then
+            error(NetworkAdapter);
+            return
+        end
         return NetworkAdapter;
     end
     -- [[ Client Exclusive ]] --
@@ -114,6 +155,9 @@ else
         Runnables[NewController.Name] = NewController;
         return NewController;
     end
+
+    CardinalSystem.GetControllerAsync = GetRunnableAsync;
+    CardinalSystem.GetController = GetRunnable;
 end
 
 -- [[ Generics ]] --
