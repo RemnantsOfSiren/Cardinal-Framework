@@ -27,6 +27,7 @@ end
 local Promise = Resources["Promise"];
 local Janitor = Resources["Janitor"];
 local Adapter = Resources["Adapter"];
+local Component = Resources["Component"];
 
 local IsServer = RunService:IsServer();
 local Handler;
@@ -77,7 +78,7 @@ local function GetRunnableAsync(_: typeof(CardinalSystem), Name: string, Timeout
             repeat
                 Runnable = Runnables[Name];
                 task.wait();
-            until tick() - T > Timeout or Runnable ~= nil;
+            until tick() - T >= Timeout or Runnable ~= nil;
             if Runnable ~= nil then
                 return Resolve(Runnables[Name]);
             else
@@ -91,10 +92,56 @@ local function GetRunnable(_: typeof(CardinalSystem), Name: string, Timeout: num
     local Success, Runnable = GetRunnableAsync(Name, Timeout):await();
     if not Success then
         error(Runnable);
-        return
     end
     return Runnable;
 end
+
+function CardinalSystem:CreateComponent(ComponentDetails)
+    if Component then
+        if not self._Components then
+            self._Components = {};
+        end
+        local NewComponent = Component(self, ComponentDetails);
+        self._Components[NewComponent.Tag] = NewComponent;
+        return NewComponent;
+    end
+end
+
+
+function CardinalSystem:GetComponentAsync(Name: string, Timeout: number?)
+    assert(Name, 'No "Name" string given to GetComponent.');
+    assert(typeof(Name) == "string", 'Tag is not of type string.');
+
+    if not Timeout then
+        Timeout = 10;
+    end
+
+    local Handler = self._Components and self._Components[Name];
+    if Handler then
+        return Promise.resolve(Handler);
+    else
+        return Promise.new(function(Resolve, Reject)
+            local T = tick();
+            repeat
+                Handler = self._Components and self._Components[Name];
+            until Handler ~= nil or tick() - T >= Timeout;
+            if Handler ~= nil then
+                return Resolve(Handler);
+            else
+                return Reject(string.format("Couldn't find ComponentHandler(%s)", Name));
+            end
+        end)
+    end
+end
+
+function CardinalSystem:GetComponent(Tag: string, Timeout: number?)
+    local Success, Component = self:GetComponent(Tag, Timeout):await();
+    if not Success then
+        error(Component);
+    end
+    return Component;
+end
+
 
 if IsServer then
     -- [[ Server Exclusive ]] --
@@ -241,6 +288,16 @@ function CardinalSystem:AddEvent(Service: ServiceProvider, Event: string, Callba
     self._Events[Service][Event][Unique] = Callback;
 
     return Unique;
+end
+
+function CardinalSystem:RemoveEvent(Id: string)
+    for Service, Events in pairs(self._Events) do
+        for Event, UniqueIds in pairs(Events) do
+            if table.find(UniqueIds, Id) then
+                self._Events[Service][Event][Id] = nil;
+            end
+        end
+    end
 end
 
 function CardinalSystem:LoadLibrary(Name: string)
