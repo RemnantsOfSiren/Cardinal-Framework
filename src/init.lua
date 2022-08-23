@@ -98,15 +98,9 @@ end
 
 function CardinalSystem:CreateComponent(ComponentDetails)
     if Component then
-        if not self._Components then
-            self._Components = {};
-        end
-        local NewComponent = Component(self, ComponentDetails);
-        self._Components[NewComponent.Tag] = NewComponent;
-        return NewComponent;
+        return Component.CreateComponent(self, ComponentDetails);
     end
 end
-
 
 function CardinalSystem:GetComponentAsync(Name: string, Timeout: number?)
     assert(Name, 'No "Name" string given to GetComponent.');
@@ -116,14 +110,14 @@ function CardinalSystem:GetComponentAsync(Name: string, Timeout: number?)
         Timeout = 10;
     end
 
-    local Handler = self._Components and self._Components[Name];
+    local Handler = Component.GetComponent(Name);
     if Handler then
         return Promise.resolve(Handler);
     else
         return Promise.new(function(Resolve, Reject)
             local T = tick();
             repeat
-                Handler = self._Components and self._Components[Name];
+                Handler = Component.GetComponent(Name);
             until Handler ~= nil or tick() - T >= Timeout;
             if Handler ~= nil then
                 return Resolve(Handler);
