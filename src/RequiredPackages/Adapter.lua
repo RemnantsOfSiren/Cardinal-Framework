@@ -1,3 +1,4 @@
+local HttpService = game:GetService('HttpService')
 local RunService = game:GetService('RunService');
 local PlayerService = game:GetService('Players');
 local Promise = require(script.Parent.Promise);
@@ -7,6 +8,16 @@ local IsServer = RunService:IsServer();
 
 local Adapter = {};
 Adapter.__index = Adapter;
+
+local function Count(Table: {any})
+    local _Count = 0;
+    
+    for _ in pairs(Table) do
+        _Count += 1;
+    end
+
+    return _Count;
+end
 
 if IsServer then
     export type PlayerStatistic = {
@@ -59,7 +70,7 @@ if IsServer then
 
         if Success then
             for _, Player in pairs(PlayerService:GetPlayers()) do
-                if Filter(Player) then
+                if Player and Filter(Player) then
                     self._REvent:FireClient(Player, Event, Args);
                 end
             end
@@ -67,9 +78,27 @@ if IsServer then
     end
 
     function Adapter:FireAll(Event: string, ...)
-        return self:Fire(function(Player)
+        self:Fire(function(Player)
             return Player:IsA("Player");
         end, Event, ...);
+    end
+else
+    function Adapter:ListenTo(Event: string, Callback)
+        if not self._Listeners then
+            self._Listeners = {};
+        end
+
+        if not self._Listeners[Event] then
+            self._Listeners[Event] = {};
+        end
+
+        local Id = HttpService:GenerateGUID(false);
+
+        self._Listeners[Event][Id] = Callback;
+
+        return function()
+            self._Listeners[Event][Id] = nil;
+        end
     end
 end
 
@@ -183,10 +212,11 @@ function Adapter.new(Parent, Provider)
         self._RFunction = Folder:FindFirstChild("RemoteFunction");
 
         local Res = self._RFunction:InvokeServer("GetEvents");
+        
         if Res.Success then
-            self.Events = Res.Response;
+            self._Events = Res.Response;
 
-            for _, Event in pairs(self.Events) do
+            for _, Event in pairs(self._Events) do
                 local function Call(...)
                     local Args = Serialization:SerializeData({...});
 
@@ -214,6 +244,20 @@ function Adapter.new(Parent, Provider)
                 end
             end
         end
+
+        self._REvent.OnClientEvent:Connect(function(Event, Args)
+            local Listeners = self._Listeners and self._Listeners[Event];
+            if Listeners and Count(Listeners) > 0 then
+                local Passed;
+                Passed, Args = self:_CheckMiddleware("Inbound", Args);
+
+                if Passed then
+                    for _, Callback in pairs(Listeners) do
+                        task.spawn(Callback, unpack(Args));
+                    end
+                end
+            end
+        end)
     end
 
     return self;

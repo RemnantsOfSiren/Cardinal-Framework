@@ -26,37 +26,71 @@ end
 
 local Handlers = {};
 
-local Handler = {};
-Handler.__index = Handler;
+local Handler = {
+    _Template = {};
+};
 
-function Handler:GetComponentByInstance(Object: Instance)
-    return self._Components[Object];
+local AcceptedEvents = {
+    ["Init"] = {"OnInit"};
+    ["DeInit"] = {"OnDeinit"};
+    ["RenderStepped"] = {"OnRenderStepped", "OnRender"};
+    ["Stepped"] = {"OnStepped"};
+    ["Heartbeat"] = {"OnHeartbeat"};
+}
+
+local function IsValidEvent(Event)
+    local Found = nil;
+
+    if AcceptedEvents[Event] ~= nil then
+        Found = Event;
+    else
+        for Accepted, Aliases in pairs(AcceptedEvents) do
+            if not Found and table.find(Aliases, Event) then
+                Found = Accepted;
+            end
+        end
+    end
+
+    return Found;
 end
 
-function Handler:GetComponents()
-    return self._Components;
-end
 
 local function CreateHandler(ComponentDetails)
-    assert(ComponentDetails.Name, "Component wasn't provided a name.");
     local Tag = ComponentDetails.Tag or ComponentDetails.Name;
     assert(Tag, "A Name/Tag wasn't specified.");
-    local Handler = setmetatable({}, Handler);
+    local Handler = {};
+    Handler.__index = Handler;
 
-    Handler._Janitor = Janitor.new();
-    Handler.Name = ComponentDetails.Name;
-    Handler.Tag = Tag;
-    Handler.Ancestors = ComponentDetails.Ancestors or { workspace };
-    Handler.InstanceTypes = ComponentDetails.InstanceTypes or {"Instance"};
+    local Temp = {};
+    Temp.__index = Temp;
 
-    ComponentDetails.Tag = nil;
-    ComponentDetails.Name = nil;
-    ComponentDetails.Ancestors = nil;
-    ComponentDetails.InstanceTypes = nil;
+    Handler.__newindex = function(Self, Index, Value)
+        if IsValidEvent(Index) then
+            rawset(Temp, Index, Value);
+        else
+            rawset(Self, Index, Value);
+        end
+    end
 
-    Handlers[Handler.Name] = Handler;
+    local NewHandler = setmetatable({}, Handler);
+    NewHandler._Template = Temp;
 
-    return Handler, ComponentDetails;
+    function NewHandler:GetComponentByInstance(Object: Instance)
+        return self._Components[Object];
+    end
+
+    function NewHandler:GetComponents()
+        return self._Components;
+    end
+
+    NewHandler._Janitor = Janitor.new();
+    NewHandler.Name = ComponentDetails.Name;
+    NewHandler.Tag = Tag;
+    NewHandler.Ancestors = ComponentDetails.Ancestors or { workspace };
+    NewHandler.InstanceTypes = ComponentDetails.InstanceTypes or {"Instance"};
+    Handlers[Tag] = NewHandler;
+
+    return NewHandler;
 end
 
 return {
@@ -65,19 +99,10 @@ return {
     end;
 
     CreateComponent = function (Framework: {any}, ComponentDetails: {any}) -- Passing framework so that I can sync to the internal system for Services.
-        assert(ComponentDetails.Name, "Expected Name (of type string) for Component");
         assert(Framework, "Framework wasn't properly specified.");
         assert(Framework.AddEvent, "Framework doesn't supply an AddEvent function");
 
-        local Handler, ComponentDetails = CreateHandler(ComponentDetails);
-
-        local Template = {};
-
-        ComponentDetails.__newindex = function(Self, Index, Value)
-            print(Index, Value);
-            rawset(Self, Index, Value);
-            rawset(Template, Index, Value);
-        end
+        local Handler = CreateHandler(ComponentDetails);
 
         local function CreateComponent(Object: Instance)
             if typeof(Object) ~= "Instance" or IsValidInstance(Handler.InstanceTypes, Object) == false then
@@ -85,45 +110,37 @@ return {
                 return
             end
 
-            print(Template);
+            local Component = setmetatable({
+                _Instance = Object;
+                _Janitor = Janitor.new();
+            }, Handler._Template);
 
-            local Component = setmetatable({}, Template);
-
-            Component._Instance = Object;
-
-            local _Janitor = Janitor.new();
+            local _Janitor = Component._Janitor;
             _Janitor:LinkToInstance(Object);
 
-            if Component.OnHeartbeat then
-                local Id = Framework:AddEvent(RunService, "Heartbeat", function(...)
-                    Component:OnHeartbeat(...);
-                end);
+            for Event, Aliases in pairs(AcceptedEvents) do
+                if Component[Event] then
+                    local Id = Framework:AddEvent(RunService, Event, function(...)
+                        Component[Event](Component, ...);
+                    end);
 
-                _Janitor:Add(function()
-                    Framework:RemoveEvent(Id);
-                end, true);
+                    _Janitor:Add(function()
+                        Framework:RemoveEvent(Id);
+                    end, true)
+                else
+                    for _, Alias in pairs(Aliases) do
+                        if Component[Alias] then
+                            local Id = Framework:AddEvent(RunService, Event, function(...)
+                                Component[Alias](Component, ...);
+                            end);
+        
+                            _Janitor:Add(function()
+                                Framework:RemoveEvent(Id);
+                            end, true)
+                        end
+                    end
+                end
             end
-
-            if Component.OnStepped then
-                local Id = Framework:AddEvent(RunService, "Stepped", function(...)
-                    Component:OnHeartbeat(...);
-                end);
-
-                _Janitor:Add(function()
-                    Framework:RemoveEvent(Id);
-                end, true);
-            end
-
-            if Component.OnRenderStepped then
-                local Id = Framework:AddEvent(RunService, "RenderStepped", function(...)
-                    Component:OnHeartbeat(...);
-                end);
-
-                _Janitor:Add(function()
-                    Framework:RemoveEvent(Id);
-                end, true);
-            end
-
             function Component:Destroy()
                 _Janitor:Destroy();
             end
@@ -163,9 +180,9 @@ return {
         end), "Disconnect");
 
         for _, Instance in pairs(CollectionService:GetTagged(Handler.Tag)) do
-            task.delay(.1, Added, Instance);
+            task.defer(Added, Instance);
         end
 
-        return ComponentDetails;
+        return Handler;
     end
 }

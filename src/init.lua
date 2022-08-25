@@ -1,7 +1,15 @@
+--[[
+    This framework is Property of Silent Studios,
+    Liscensed through an MIT for public use.
+    Currently still in development working out some kinks.
+]]--
+
 -- [[ Services ]] --
 local RunService = game:GetService('RunService');
 local PlayerService = game:GetService('Players');
 local HttpService = game:GetService('HttpService');
+local ReplicatedStorage = game:GetService('ReplicatedStorage');
+local WallyPackages = ReplicatedStorage:FindFirstChild("Packages");
 
 local Runnables = {};
 local Resources = {};
@@ -21,16 +29,31 @@ local AcceptedEvents = {
 }
 
 for _, Package in pairs(script.RequiredPackages:GetChildren()) do
-    Resources[Package.Name] = require(Package);
+    if Package:IsA("ModuleScript") then
+        Resources[Package.Name] = require(Package);
+    end
 end
 
 local Promise = Resources["Promise"];
 local Janitor = Resources["Janitor"];
 local Adapter = Resources["Adapter"];
 local Component = Resources["Component"];
+local Signal = Resources["Signal"];
 
 local IsServer = RunService:IsServer();
 local Handler;
+
+if IsServer then
+    local ServerStorage = game:GetService('ServerStorage')
+    local ServerPackages = ServerStorage:FindFirstChild("Packages");
+    if ServerPackages then
+        for _, Package in pairs(ServerPackages:GetChildren()) do
+            if Package:IsA("ModuleScript") then
+                Resources[Package.Name] = require(Package);
+            end
+        end
+    end
+end
 
 local CardinalSystem = {};
 CardinalSystem.__index = CardinalSystem;
@@ -38,6 +61,8 @@ CardinalSystem.__index = CardinalSystem;
 function CardinalSystem.new()
     local self = setmetatable({
         _Janitor = Janitor.new();
+        Initialized = Signal.new();
+        Started = Signal.new();
     }, CardinalSystem);
 
     self.new = nil;
@@ -47,10 +72,10 @@ function CardinalSystem.new()
     };
 
     local Folder;
+    self._Performance = true;
+
     if IsServer then
         self._Networking = true;
-        self._Performance = true;
-
         Folder = Instance.new("Folder");
         Folder.Name = "ServiceFolder";
         Folder.Parent = script;
@@ -80,18 +105,19 @@ local function GetRunnableAsync(_: typeof(CardinalSystem), Name: string, Timeout
                 task.wait();
             until tick() - T >= Timeout or Runnable ~= nil;
             if Runnable ~= nil then
-                return Resolve(Runnables[Name]);
+                return Resolve(Runnable);
             else
-                return Reject(string.format("Couldn't find %s(%s): %s", if IsServer then "Service" else "Controller", Name, debug.traceback()));
+                return Reject(string.format("Couldn't find %s: %s", if IsServer then "Service" else "Controller", Name));
             end
         end)
     end
 end
 
 local function GetRunnable(_: typeof(CardinalSystem), Name: string, Timeout: number?)
-    local Success, Runnable = GetRunnableAsync(Name, Timeout):await();
+    local Success, Runnable = GetRunnableAsync(_, Name, Timeout):await();
     if not Success then
-        error(Runnable);
+        warn(Runnable);
+        return
     end
     return Runnable;
 end
@@ -105,7 +131,6 @@ end
 function CardinalSystem:GetComponentAsync(Name: string, Timeout: number?)
     assert(Name, 'No "Name" string given to GetComponent.');
     assert(typeof(Name) == "string", 'Tag is not of type string.');
-
     if not Timeout then
         Timeout = 10;
     end
@@ -122,7 +147,7 @@ function CardinalSystem:GetComponentAsync(Name: string, Timeout: number?)
             if Handler ~= nil then
                 return Resolve(Handler);
             else
-                return Reject(string.format("Couldn't find ComponentHandler(%s)", Name));
+                return Reject(string.format("Couldn't find ComponentHandler: %s", Name));
             end
         end)
     end
@@ -131,7 +156,8 @@ end
 function CardinalSystem:GetComponent(Tag: string, Timeout: number?)
     local Success, Component = self:GetComponent(Tag, Timeout):await();
     if not Success then
-        error(Component);
+        warn(Component);
+        return
     end
     return Component;
 end
@@ -163,15 +189,21 @@ else
     local Adapters = {};
 
     function CardinalSystem:GetServiceAsync(Name: string)
+        if not script:FindFirstChild("ServerReady") then
+            script:WaitForChild("ServerReady");
+        end
+        
         if not self._Networking then
             return Promise.reject(string.format("Networking is disabled: %s", debug.traceback()));
         end
 
-        if Adapters[Name] then
-            return Promise.resolve(Adapters[Name]);
+        local _Adapter = Adapters[Name];
+
+        if _Adapter then
+            return Promise.resolve(_Adapter);
         else
             return Promise.new(function(Resolve, Reject)
-                local _Adapter = Adapter.new(self._ServiceFolder, Name);
+                _Adapter = Adapter.new(self._ServiceFolder, Name);
                 if not _Adapter then
                     return Reject(string.format("Error trying to make ClientAdapter for %s: %s", Name, debug.traceback()));
                 end
@@ -184,7 +216,7 @@ else
     function CardinalSystem:GetService(Name: string)
         local Success, NetworkAdapter = self:GetServiceAsync(Name):await();
         if not Success then
-            error(NetworkAdapter);
+            warn(NetworkAdapter);
             return
         end
         return NetworkAdapter;
@@ -203,17 +235,20 @@ end
 
 -- [[ Generics ]] --
 local function Get(Data: Folder | {ModuleScript} | ModuleScript, Descendants: boolean?)
-    local T = if typeof(Data) == "table" then Data else Data:GetChildren();
+    local T;
 
-     if T and Descendants then
+    if typeof(Data) == "table" then
+        T = Data;
+    elseif Data:IsA("Folder") then
+        T = Data:GetChildren();
+    else
+        T = {Data};
+    end
+
+    if T and Descendants then
         for _, Object in pairs(T) do
-            if not Object:IsA("ModuleScript") then
-                table.remove(T, table.find(T, Object));
-                continue
-            end
-
             for _, Descendant in pairs(Object:GetDescendants()) do
-                if Descendant:IsA("ModuleScript") then
+                if Descendant:IsA("ModuleScript") and not table.find(T, Descendant) then
                     table.insert(T, Descendant);
                 end
             end
@@ -223,11 +258,15 @@ local function Get(Data: Folder | {ModuleScript} | ModuleScript, Descendants: bo
     return T;
 end
 
-local function ProcessObject(Object, Table: {any}?)
+local function ProcessObject(Object, IsResource: boolean?)
     if Object and Object:IsA("ModuleScript") then
+        if IsResource and Resources[Object.Name] then
+            return
+        end
+
         table.insert(LoadCache, Object.Name);
-        if Table then
-            Table[Object.Name] = require(Object);
+        if IsResource then
+            Resources[Object.Name] = require(Object);
         else
             require(Object);
         end
@@ -238,7 +277,7 @@ end
 function CardinalSystem:AddResources(_Resources: Folder | {ModuleScript} | ModuleScript | nil, Descendants: boolean?)
     if _Resources ~= nil and typeof(_Resources) ~= "boolean" then
         for _, Module in pairs(Get(_Resources, Descendants)) do
-            task.spawn(ProcessObject, Module, Resources);
+            task.spawn(ProcessObject, Module, true);
         end
     end
 end
@@ -294,25 +333,57 @@ function CardinalSystem:RemoveEvent(Id: string)
     end
 end
 
-function CardinalSystem:LoadLibrary(Name: string)
-    if Resources[Name] then
-        return Resources[Name];
+function CardinalSystem:LoadLibraryAsync(Name: string, Timeout: number?)
+    if type(Name) ~= "string" then
+        return Promise.reject(string.format("Invalid type %s, expected: string", type(Name)));
+    end
+
+    if not Timeout then
+        Timeout = 10;
+    end
+
+    local Found = Resources[Name];
+
+    if Found then
+        return Promise.resolve(Found);
     else
-        warn(string.format("Resource(%s) Not Found.", Name));
+        return Promise.new(function(Resolve, Reject)
+            local T = tick();
+            repeat
+                Found = Resources[Name];
+                task.wait();
+            until Found ~= nil or tick() - T > Timeout;
+            if Found then
+                return Resolve(Found);
+            else
+                return Reject(string.format("Couldn't find Resource: %s", Name))
+            end
+        end)
     end
 end
 
+function CardinalSystem:LoadLibrary(Name: string, Timeout: number?)
+    local Success, Library = self:LoadLibraryAsync(Name, Timeout):await();
+    if not Success then
+        warn(Library);
+        return
+    end
+    return Library;
+end
+
 function CardinalSystem:_Init()
+    while #LoadCache > 0 do
+        task.wait();
+    end
+
     local Promises = {};
 
     for Name, Runnable in pairs(Runnables) do
         Runnable.__Clock = os.clock();
 
         if Runnable.OnInit ~= nil then
-            table.insert(Promises, Promise.async(function(Resolve, Reject)
-                local Success, Error = pcall(function()
-                    Runnable:OnInit();
-                end)
+            table.insert(Promises, Promise.new(function(Resolve, Reject)
+                local Success, Error = pcall(Runnable.OnInit, Runnable);
 
                 if not Success then
                     warn(string.format("%s Couldn't be Initialized: %s", Name, tostring(Error)));
@@ -341,26 +412,28 @@ function CardinalSystem:Start(Config: {[string]: any}?)
             self._ServiceFolder:Destroy();
         end
     else
+        script:WaitForChild("ServerReady");
         if Config then
             self._Performance = Config.Performance ~= nil and Config.Performance or true;
         end
-        script:WaitForChild("ServerReady");
         self._Networking = if script:FindFirstChild("ServiceFolder") then true else false;
     end
 
     local InitSuccessful = self:_Init():await();
+
     if not InitSuccessful then
         return Promise.reject("Couldn't Initialize all Runnables.");
     end
+
+    self.Initialized:Fire();
 
     local Promises = {};
 
     for Name, Runnable in pairs(Runnables) do
         if Runnable.OnStart ~= nil then
-            table.insert(Promises, Promise.async(function(Resolve, Reject)
-                local Success, Error = pcall(function()
-                    Runnable:OnStart();
-                end);
+            table.insert(Promises, Promise.new(function(Resolve, Reject)
+                local Success, Error = pcall(Runnable.OnStart, Runnable);
+
                 if not Success then
                     warn(string.format("%s Couldn't be Started: %s", Name, tostring(Error)));
                     return Reject();
@@ -448,6 +521,7 @@ function CardinalSystem:Start(Config: {[string]: any}?)
         Finished.Parent = script;
     end
 
+    self.Started:Fire();
     return Promise.resolve("Finished");
 end
 
