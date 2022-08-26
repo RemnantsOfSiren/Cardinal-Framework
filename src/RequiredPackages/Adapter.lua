@@ -26,7 +26,6 @@ if IsServer then
         ["2"]: {[string]: {[string]: any}}
     }
 
-    -- [[ This will pertain to middleware exclusively ]] --
     function Adapter:_CreatePlayerStatistics(Player: Player)
         local Statistics = {
             [1] = {
@@ -63,24 +62,37 @@ if IsServer then
         return Statistics :: PlayerStatistic;
     end
 
-    function Adapter:Fire(Filter: (Player) -> boolean, Event: string, ...)
-        local Args = {...};
-
-        local Success, Args = self:_CheckMiddleware('Outbound', Args);
+    function Adapter:FireFilter(Filter: (Player) -> boolean, Event: string, ...)
+        local Success, Args = self:_CheckMiddleware('Outbound', {...});
 
         if Success then
             for _, Player in pairs(PlayerService:GetPlayers()) do
-                if Player and Filter(Player) then
-                    self._REvent:FireClient(Player, Event, Args);
-                end
+                task.spawn(function()
+                    if Player and Filter(Player) then
+                        self._REvent:FireClient(Player, Event, Args);
+                    end
+                end)
+            end
+        end
+    end
+
+    function Adapter:Fire(Player: Player | Model, Event: string, ...)
+        Player = if Player:IsA("Player") then Player else PlayerService:GetPlayerFromCharacter(Player);
+
+        if Player then
+            local Success, Args = self:_CheckMiddleware('Outbound', {...});
+            if Success then
+                self._REvent:FireClient(Player, Event, Args);
             end
         end
     end
 
     function Adapter:FireAll(Event: string, ...)
-        self:Fire(function(Player)
-            return Player:IsA("Player");
-        end, Event, ...);
+        local Success, Args = self:_CheckMiddleware('Outbound', {...});
+
+        if Success then
+            self._REvent:FireAllClients(Event, Args);
+        end
     end
 else
     function Adapter:ListenTo(Event: string, Callback)
@@ -103,7 +115,7 @@ else
 end
 
 function Adapter:_CheckMiddleware(Category: string, Args: {[any]: any})
-    local Pass;
+    local Pass = false;
 
     for _, Middleware in pairs(self._Middleware[Category]) do
         Pass, Args = Middleware(Args);
@@ -129,6 +141,7 @@ function Adapter.new(Parent, Provider)
 
     self._Events = {};
     self._Functions = {};
+    self._PlayerStatistics = {};
 
     self._Middleware = {
         ["Inbound"] = {
@@ -145,7 +158,6 @@ function Adapter.new(Parent, Provider)
             end
         };
     }
-    self._PlayerStatistics = {};
 
     if IsServer then
         assert(typeof(Provider) == "table", "Table is expected for Server Handler");
@@ -166,7 +178,6 @@ function Adapter.new(Parent, Provider)
         Folder.Parent = Parent;
 
         RFunction.OnServerInvoke = function(Player, Todo, Args)
-            local Res = {Success = false};
             local Statistics = self._PlayerStatistics[Player];
 
             if not Statistics then
@@ -174,6 +185,7 @@ function Adapter.new(Parent, Provider)
             end
 
             local CurrentStatistics = Statistics[1];
+            local Res = {Success = false};
 
             if Todo == "GetEvents" then
                 local List = {};
@@ -191,8 +203,7 @@ function Adapter.new(Parent, Provider)
 
                 if Passed then
                     table.remove(Args, 1);
-                    Res.Success = true;
-                    Res.Response = Provider.Client[Todo](Provider.Client, Player, unpack(Args));
+                    Res.Success, Res.Response = self:_CheckMiddleware("Outbound", table.pack(Provider.Client[Todo](Provider.Client, Player, unpack(Args))));
                 end
             end
 
@@ -218,20 +229,32 @@ function Adapter.new(Parent, Provider)
 
             for _, Event in pairs(self._Events) do
                 local function Call(...)
-                    local Args = Serialization:SerializeData({...});
+                    local Pass, Args = self:_CheckMiddleware("Outbound", {...});
 
-                    return Promise.new(function(Resolve, Reject)
-                        local Res;
-                        local Success = pcall(function()
-                            Res = self._RFunction:InvokeServer(Event, Args);
-                        end)
-
-                        if Success and Res and Res.Response then
-                            Res.Response = Serialization:DeserializeData(Res.Response);
-                        end
-
-                        return Res.Success and Resolve(Res.Response) or Reject();
-                    end);
+                    if not Pass then
+                        return Promise.reject();
+                    else
+                        return Promise.new(function(Resolve, Reject)
+                            local Res;
+                            local Success = pcall(function()
+                                Res = self._RFunction:InvokeServer(Event, Args);
+                            end)
+                            
+                            if not Success then
+                                return Reject();
+                            elseif not Res.Success then
+                                return Reject();
+                            else
+                                local Success, Args = self:_CheckMiddleware("Inbound", Res.Response);
+                                
+                                if not Success then
+                                    return Reject(unpack(Args));
+                                else
+                                    return Resolve(unpack(Args));
+                                end
+                            end
+                        end);
+                    end
                 end
                 
                 self[Event .. "Async"] = function(_, ...)
@@ -239,7 +262,11 @@ function Adapter.new(Parent, Provider)
                 end
                 
                 self[Event] = function(_, ...)
-                    local _, Res = Call(...):await();
+                    local Success, Res = Call(...):await();
+                    if not Success then
+                        warn(Res);
+                        return
+                    end
                     return Res;
                 end
             end

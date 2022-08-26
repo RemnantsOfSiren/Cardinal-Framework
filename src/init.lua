@@ -128,40 +128,43 @@ function CardinalSystem:CreateComponent(ComponentDetails)
     end
 end
 
-function CardinalSystem:GetComponentAsync(Name: string, Timeout: number?)
-    assert(Name, 'No "Name" string given to GetComponent.');
-    assert(typeof(Name) == "string", 'Tag is not of type string.');
+function CardinalSystem:GetComponentAsync(Tag: string, Timeout: number?)
+    assert(Component, "Component Resource wasn't found.");
+    assert(Tag, 'No "Name" string given to GetComponent.');
+    assert(typeof(Tag) == "string", 'Tag is not of type string.');
     if not Timeout then
         Timeout = 10;
     end
 
-    local Handler = Component.GetComponent(Name);
+    local Handler = Component.GetComponent(Tag);
+    
     if Handler then
         return Promise.resolve(Handler);
     else
         return Promise.new(function(Resolve, Reject)
             local T = tick();
             repeat
-                Handler = Component.GetComponent(Name);
+                Handler = Component.GetComponent(Tag);
+                task.wait();
             until Handler ~= nil or tick() - T >= Timeout;
             if Handler ~= nil then
                 return Resolve(Handler);
             else
-                return Reject(string.format("Couldn't find ComponentHandler: %s", Name));
+                return Reject(string.format("Couldn't find ComponentHandler: %s", Tag));
             end
         end)
     end
 end
 
 function CardinalSystem:GetComponent(Tag: string, Timeout: number?)
-    local Success, Component = self:GetComponent(Tag, Timeout):await();
+    local Success, Component = self:GetComponentAsync(Tag, Timeout):await();
+
     if not Success then
         warn(Component);
         return
     end
     return Component;
 end
-
 
 if IsServer then
     -- [[ Server Exclusive ]] --
@@ -194,7 +197,7 @@ else
         end
         
         if not self._Networking then
-            return Promise.reject(string.format("Networking is disabled: %s", debug.traceback()));
+            return Promise.reject(string.format("Networking is disabled: %s", debug.traceback(nil, 2)));
         end
 
         local _Adapter = Adapters[Name];
@@ -205,7 +208,7 @@ else
             return Promise.new(function(Resolve, Reject)
                 _Adapter = Adapter.new(self._ServiceFolder, Name);
                 if not _Adapter then
-                    return Reject(string.format("Error trying to make ClientAdapter for %s: %s", Name, debug.traceback()));
+                    return Reject(string.format("Error trying to make ClientAdapter for %s: %s", Name, debug.traceback(nil, 2)));
                 end
                 Adapters[Name] = _Adapter;
                 return Resolve(_Adapter);
@@ -386,7 +389,7 @@ function CardinalSystem:_Init()
                 local Success, Error = pcall(Runnable.OnInit, Runnable);
 
                 if not Success then
-                    warn(string.format("%s Couldn't be Initialized: %s", Name, tostring(Error)));
+                    warn(string.format("%s Couldn't be Initialized: %s", Name, tostring(Error)), debug.traceback(nil, 2));
                     return Reject();
                 end
 

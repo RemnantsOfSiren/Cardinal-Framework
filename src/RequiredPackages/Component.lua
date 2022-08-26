@@ -26,10 +26,6 @@ end
 
 local Handlers = {};
 
-local Handler = {
-    _Template = {};
-};
-
 local AcceptedEvents = {
     ["Init"] = {"OnInit"};
     ["DeInit"] = {"OnDeinit"};
@@ -38,22 +34,17 @@ local AcceptedEvents = {
     ["Heartbeat"] = {"OnHeartbeat"};
 }
 
-local function IsValidEvent(Event)
-    local Found = nil;
-
-    if AcceptedEvents[Event] ~= nil then
-        Found = Event;
-    else
-        for Accepted, Aliases in pairs(AcceptedEvents) do
-            if not Found and table.find(Aliases, Event) then
-                Found = Accepted;
-            end
-        end
-    end
-
-    return Found;
-end
-
+local HandlerExclusive = {
+    "Name",
+    "Tag",
+    "GetComponents",
+    "GetComponentByInstance",
+    "Ancestors",
+    "_Janitor",
+    "_Components",
+    "InstanceTypes",
+    "_Template"
+}
 
 local function CreateHandler(ComponentDetails)
     local Tag = ComponentDetails.Tag or ComponentDetails.Name;
@@ -64,11 +55,11 @@ local function CreateHandler(ComponentDetails)
     local Temp = {};
     Temp.__index = Temp;
 
-    Handler.__newindex = function(Self, Index, Value)
-        if IsValidEvent(Index) then
-            rawset(Temp, Index, Value);
+    Handler.__newindex = function(_, Index, Value)
+        if table.find(HandlerExclusive, Index) then
+            rawset(Handler, Index, Value);
         else
-            rawset(Self, Index, Value);
+            rawset(Temp, Index, Value);
         end
     end
 
@@ -83,6 +74,7 @@ local function CreateHandler(ComponentDetails)
         return self._Components;
     end
 
+    NewHandler._Components = {};
     NewHandler._Janitor = Janitor.new();
     NewHandler.Name = ComponentDetails.Name;
     NewHandler.Tag = Tag;
@@ -109,14 +101,21 @@ return {
                 warn(string.format("Component(%s) expected the following InstanceTypes: %s but %s was given.", Handler.Tag, table.concat(Handler.InstanceTypes, ","), typeof(Object) ~= "Instance" and typeof(Object) or Object.ClassName));
                 return
             end
+            print(Handler._Template);
 
             local Component = setmetatable({
                 _Instance = Object;
                 _Janitor = Janitor.new();
             }, Handler._Template);
+            
 
+            Handler._Components[Object] = Component;
             local _Janitor = Component._Janitor;
             _Janitor:LinkToInstance(Object);
+
+            _Janitor:Add(function()
+                Handler._Components[Object] = nil;
+            end, true);
 
             for Event, Aliases in pairs(AcceptedEvents) do
                 if Component[Event] then
