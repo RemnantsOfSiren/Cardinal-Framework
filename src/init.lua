@@ -9,8 +9,6 @@ do
     local RunService = game:GetService('RunService');
     local PlayerService = game:GetService('Players');
     local HttpService = game:GetService('HttpService');
-    local ReplicatedStorage = game:GetService('ReplicatedStorage');
-    local WallyPackages = ReplicatedStorage:FindFirstChild("Packages");
 
     local Runnables = {};
     local Resources = {};
